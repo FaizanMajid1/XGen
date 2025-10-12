@@ -8,8 +8,24 @@ import streamlit as st
 from dotenv import load_dotenv
 from openai import OpenAI
 
-# Load .env so OPENAI_API_KEY is available via environment
+# Load .env so OPENAI_API_KEY is available via environment (for local development)
 load_dotenv()
+
+# =====================================
+# API Key Setup (supports both local .env and Streamlit Cloud secrets)
+# =====================================
+def get_api_key() -> str:
+    """Get API key from Streamlit secrets (Cloud) or environment (local)."""
+    # First try Streamlit secrets (for Streamlit Cloud deployment)
+    try:
+        if hasattr(st, 'secrets') and 'OPENAI_API_KEY' in st.secrets:
+            return st.secrets['OPENAI_API_KEY']
+    except (FileNotFoundError, Exception):
+        # Secrets file doesn't exist (local dev), fall through to env var
+        pass
+    
+    # Fall back to environment variable (for local development with .env)
+    return os.getenv("OPENAI_API_KEY", "")
 
 # =====================================
 # Common Helpers
@@ -37,7 +53,7 @@ def _coerce_to_json(s: str) -> Dict[str, Any]:
 
 
 def _responses_call(system: str, user: str, model: str = "gpt-5-mini") -> Dict[str, Any]:
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    client = OpenAI(api_key=get_api_key())
     resp = client.responses.create(
         model=model,
         input=[
@@ -243,8 +259,8 @@ with st.sidebar:
     st.header("TweetGen")
     module = st.radio("Module", ["Generate Tweet", "Reply Generator"], index=0)
     model = st.selectbox("Model", ["gpt-5-mini"], index=0)
-    st.text("API key loaded: ✅" if os.getenv("OPENAI_API_KEY") else "API key missing ❌")
-    st.caption("Keys are read from your .env via python-dotenv.")
+    st.text("API key loaded: ✅" if get_api_key() else "API key missing ❌")
+    st.caption("Keys are read from .env (local) or Streamlit secrets (cloud).")
 
 if module == "Generate Tweet":
     st.title("🐦 Generate Tweets")
@@ -276,8 +292,8 @@ if module == "Generate Tweet":
     btn = st.button("✨ Generate Tweets", type="primary")
 
     if btn:
-        if not os.getenv("OPENAI_API_KEY"):
-            st.error("OPENAI_API_KEY not set. Create a .env with OPENAI_API_KEY=... and restart.")
+        if not get_api_key():
+            st.error("OPENAI_API_KEY not set. For local: create .env file. For Streamlit Cloud: add to secrets.")
         else:
             with st.spinner("Calling the model…"):
                 system, user = build_prompts_generate_tweet(niche, topic, purpose, instructions, samples, int(n))
@@ -341,8 +357,8 @@ else:  # Reply Generator
     btn2 = st.button("⚡ Generate Replies", type="primary")
 
     if btn2:
-        if not os.getenv("OPENAI_API_KEY"):
-            st.error("OPENAI_API_KEY not set. Create a .env with OPENAI_API_KEY=... and restart.")
+        if not get_api_key():
+            st.error("OPENAI_API_KEY not set. For local: create .env file. For Streamlit Cloud: add to secrets.")
         else:
             with st.spinner("Calling the model…"):
                 system, user = build_prompts_reply_generator(tweet, goal, persona, opinion_mix, rg_instructions, int(total_replies))
