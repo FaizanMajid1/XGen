@@ -28,6 +28,19 @@ A Streamlit app that generates engaging tweets and replies using OpenAI's API.
    
    ⚠️ **Important**: Never commit your `.env` file to git! It's already in `.gitignore`.
 
+4. **(Optional) Persistent History with Supabase**
+   
+   History is stored in memory by default and is lost on refresh. For persistent, shared history across all devices:
+   
+   - Create a free project at [supabase.com](https://supabase.com)
+   - In Supabase: **SQL Editor** → run the contents of `supabase_history.sql`
+   - Get your **Project URL** and **service_role key** from Project Settings → API
+   - Add to `.env` (local) or Streamlit secrets (cloud):
+     ```
+     SUPABASE_URL=https://xxxxx.supabase.co
+     SUPABASE_SERVICE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+     ```
+
 4. **Run the app**
    ```bash
    streamlit run app.py
@@ -59,6 +72,9 @@ This is where you add your API key **securely** without exposing it in your code
 4. Add your secrets in TOML format:
    ```toml
    OPENAI_API_KEY = "sk-your-actual-api-key-here"
+   # Optional: for persistent history shared across all devices
+   SUPABASE_URL = "https://xxxxx.supabase.co"
+   SUPABASE_SERVICE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
    ```
 5. Click **"Save"**
 6. Your app will automatically restart with the secure API key
