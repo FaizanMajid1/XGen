@@ -565,9 +565,13 @@ st.set_page_config(page_title="TweetGen • Tweets & Replies", page_icon="🐦",
 
 with st.sidebar:
     st.header("TweetGen")
-    history_count = len(_load_history())
-    history_label = f"History ({history_count})" if history_count else "History"
-    module = st.radio("Module", ["Generate Tweet", "Generate Tweet V2", "Reply Generator", history_label], index=0)
+    # Use stable options so changing history count doesn't reset the radio selection
+    module = st.radio(
+        "Module",
+        ["Generate Tweet", "Generate Tweet V2", "Reply Generator", "History"],
+        index=0,
+        key="module_radio",
+    )
     model = st.selectbox("Model", ["gpt-5-mini"], index=0)
     st.text("API key loaded: ✅" if get_api_key() else "API key missing ❌")
     sb_client = _get_supabase_client()
@@ -577,7 +581,6 @@ with st.sidebar:
         st.text("History: session only")
         if _supabase_last_error:
             st.caption(f"Supabase: {_supabase_last_error}")
-    st.caption("Keys are read from .env (local) or Streamlit secrets (cloud).")
 
 if module == "Generate Tweet":
     st.title("🐦 Generate Tweets")
@@ -839,6 +842,7 @@ elif module == "Reply Generator":
 else:  # History
     history: List[Dict[str, Any]] = _load_history()
     st.title("🕘 History")
+    st.button("🔄 Refresh", key="history_refresh")
 
     if not _get_supabase_client():
         st.caption("💡 History is session-only. Add Supabase (see README) to persist across devices and refreshes.")
