@@ -3,14 +3,20 @@ import json
 import re
 import math
 from datetime import datetime
+from pathlib import Path
 from typing import Tuple, Dict, Any, List
 
 import streamlit as st
 from dotenv import load_dotenv
 from openai import OpenAI
 
-# Load .env so OPENAI_API_KEY is available via environment (for local development)
-load_dotenv()
+try:
+    from supabase import create_client, Client
+except ImportError:
+    Client = None  # type: ignore
+
+# Load .env from app directory (works regardless of cwd when Streamlit runs)
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 # =====================================
 # API Key Setup (supports both local .env and Streamlit Cloud secrets)
@@ -27,6 +33,42 @@ def get_api_key() -> str:
     
     # Fall back to environment variable (for local development with .env)
     return os.getenv("OPENAI_API_KEY", "")
+
+
+def _get_secret(key: str, env_key: str) -> str:
+    """Get secret from Streamlit secrets or environment."""
+    try:
+        if hasattr(st, 'secrets') and key in st.secrets:
+            return st.secrets[key]
+    except (FileNotFoundError, Exception):
+        pass
+    return os.getenv(env_key, "")
+
+
+_supabase_last_error: str | None = None
+
+
+def _get_supabase_client() -> "Client | None":
+    """Get Supabase client if configured. Returns None if not available."""
+    global _supabase_last_error
+    _supabase_last_error = None
+    if Client is None:
+        _supabase_last_error = "supabase package not installed"
+        return None
+    url = _get_secret("SUPABASE_URL", "SUPABASE_URL")
+    key = (
+        _get_secret("SUPABASE_SERVICE_KEY", "SUPABASE_SERVICE_KEY")
+        or _get_secret("SUPABASE_KEY", "SUPABASE_KEY")
+        or _get_secret("SUPABASE_ANON_KEY", "SUPABASE_ANON_KEY")
+    )
+    if not url or not key:
+        _supabase_last_error = "SUPABASE_URL or SUPABASE_SERVICE_KEY not set in .env or secrets"
+        return None
+    try:
+        return create_client(url.strip(), key.strip())
+    except Exception as e:
+        _supabase_last_error = str(e)
+        return None
 
 # =====================================
 # Common Helpers
@@ -362,22 +404,65 @@ def call_reply_generator(system: str, user: str, model: str = "gpt-5-mini") -> D
     return _responses_call(system, user, model)
 
 # =====================================
-# History Helper
+# History Helper (persistent via Supabase when configured)
 # =====================================
 
-_HISTORY_LIMIT = 50
+_HISTORY_LIMIT = 100
+_HISTORY_TABLE = "tweetgen_history"
 
 def _save_to_history(module: str, inputs: Dict[str, Any], result: Dict[str, Any]) -> None:
-    if "history" not in st.session_state:
-        st.session_state["history"] = []
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     entry = {
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "timestamp": timestamp,
         "module": module,
         "inputs": inputs,
         "result": result,
     }
+
+    client = _get_supabase_client()
+    if client:
+        try:
+            client.table(_HISTORY_TABLE).insert({
+                "module": module,
+                "inputs": inputs,
+                "result": result,
+            }).execute()
+        except Exception:
+            pass  # Fall through to session_state on failure
+
+    if "history" not in st.session_state:
+        st.session_state["history"] = []
     st.session_state["history"].insert(0, entry)
     st.session_state["history"] = st.session_state["history"][:_HISTORY_LIMIT]
+
+
+def _load_history() -> List[Dict[str, Any]]:
+    """Load history from Supabase (if configured) or session_state."""
+    client = _get_supabase_client()
+    if client:
+        try:
+            resp = (
+                client.table(_HISTORY_TABLE)
+                .select("id, created_at, module, inputs, result")
+                .order("created_at", desc=True)
+                .limit(_HISTORY_LIMIT)
+                .execute()
+            )
+            rows = resp.data or []
+            return [
+                {
+                    "id": r.get("id"),
+                    "timestamp": r.get("created_at", "")[:19].replace("T", " ") if r.get("created_at") else "",
+                    "module": r.get("module", ""),
+                    "inputs": r.get("inputs") or {},
+                    "result": r.get("result") or {},
+                }
+                for r in rows
+            ]
+        except Exception:
+            pass
+
+    return st.session_state.get("history", [])
 
 
 def _history_title(entry: Dict[str, Any]) -> str:
@@ -395,7 +480,7 @@ def _history_title(entry: Dict[str, Any]) -> str:
     return f"[{ts}]  {label}"
 
 
-def _render_history_entry(entry: Dict[str, Any]) -> None:
+def _render_history_entry(entry: Dict[str, Any], idx: int = 0) -> None:
     module = entry["module"]
     inp = entry["inputs"]
     result = entry["result"]
@@ -463,12 +548,13 @@ def _render_history_entry(entry: Dict[str, Any]) -> None:
                     for j, r in enumerate(replies, 1):
                         st.write(f"{j}. {r}")
 
+    dl_key = f"dl_{entry.get('id', idx)}_{entry.get('timestamp', '')}"
     st.download_button(
         "Download JSON",
         data=json.dumps({"inputs": inp, "result": result}, ensure_ascii=False, indent=2),
         file_name=f"history_{entry['timestamp'].replace(':', '-').replace(' ', '_')}.json",
         mime="application/json",
-        key=f"dl_{entry['timestamp']}",
+        key=dl_key,
     )
 
 # =====================================
@@ -479,11 +565,18 @@ st.set_page_config(page_title="TweetGen • Tweets & Replies", page_icon="🐦",
 
 with st.sidebar:
     st.header("TweetGen")
-    history_count = len(st.session_state.get("history", []))
+    history_count = len(_load_history())
     history_label = f"History ({history_count})" if history_count else "History"
     module = st.radio("Module", ["Generate Tweet", "Generate Tweet V2", "Reply Generator", history_label], index=0)
     model = st.selectbox("Model", ["gpt-5-mini"], index=0)
     st.text("API key loaded: ✅" if get_api_key() else "API key missing ❌")
+    sb_client = _get_supabase_client()
+    if sb_client:
+        st.text("History: persistent ✅")
+    else:
+        st.text("History: session only")
+        if _supabase_last_error:
+            st.caption(f"Supabase: {_supabase_last_error}")
     st.caption("Keys are read from .env (local) or Streamlit secrets (cloud).")
 
 if module == "Generate Tweet":
@@ -744,8 +837,13 @@ elif module == "Reply Generator":
                     )
 
 else:  # History
-    history: List[Dict[str, Any]] = st.session_state.get("history", [])
+    history: List[Dict[str, Any]] = _load_history()
     st.title("🕘 History")
+
+    if not _get_supabase_client():
+        st.caption("💡 History is session-only. Add Supabase (see README) to persist across devices and refreshes.")
+        if _supabase_last_error:
+            st.error(f"Supabase error: {_supabase_last_error}")
 
     if not history:
         st.info("No history yet. Run a module to see results here.")
@@ -754,4 +852,4 @@ else:  # History
         for idx, entry in enumerate(history):
             title = _history_title(entry)
             with st.expander(title, expanded=False):
-                _render_history_entry(entry)
+                _render_history_entry(entry, idx)
