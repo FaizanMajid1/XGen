@@ -107,6 +107,7 @@ def _responses_call(system: str, user: str, model: str | None = None) -> Dict[st
     client = OpenAI(api_key=get_api_key())
     resp = client.responses.create(
         model=model,
+        store=False,
         input=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},
