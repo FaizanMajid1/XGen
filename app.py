@@ -71,6 +71,12 @@ def _get_supabase_client() -> "Client | None":
         return None
 
 # =====================================
+# Model options (backend + dropdown)
+# =====================================
+AVAILABLE_MODELS = ["gpt-5-mini", "gpt-5.4"]
+DEFAULT_MODEL = "gpt-5-mini"
+
+# =====================================
 # Common Helpers
 # =====================================
 
@@ -95,7 +101,9 @@ def _coerce_to_json(s: str) -> Dict[str, Any]:
     return {"error": "Model did not return valid JSON.", "raw": s}
 
 
-def _responses_call(system: str, user: str, model: str = "gpt-5-mini") -> Dict[str, Any]:
+def _responses_call(system: str, user: str, model: str | None = None) -> Dict[str, Any]:
+    if model is None:
+        model = DEFAULT_MODEL
     client = OpenAI(api_key=get_api_key())
     resp = client.responses.create(
         model=model,
@@ -197,7 +205,7 @@ TASK
     return system, user
 
 
-def call_generate_tweet(system: str, user: str, model: str = "gpt-5-mini") -> Dict[str, Any]:
+def call_generate_tweet(system: str, user: str, model: str | None = None) -> Dict[str, Any]:
     return _responses_call(system, user, model)
 
 # =====================================
@@ -308,7 +316,7 @@ TASK
     return system, user
 
 
-def call_generate_tweet_v2(system: str, user: str, model: str = "gpt-5-mini") -> Dict[str, Any]:
+def call_generate_tweet_v2(system: str, user: str, model: str | None = None) -> Dict[str, Any]:
     return _responses_call(system, user, model)
 
 # =====================================
@@ -400,7 +408,7 @@ CONSTRAINTS
     return system, user
 
 
-def call_reply_generator(system: str, user: str, model: str = "gpt-5-mini") -> Dict[str, Any]:
+def call_reply_generator(system: str, user: str, model: str | None = None) -> Dict[str, Any]:
     return _responses_call(system, user, model)
 
 # =====================================
@@ -572,7 +580,7 @@ with st.sidebar:
         index=0,
         key="module_radio",
     )
-    model = st.selectbox("Model", ["gpt-5-mini"], index=0)
+    model = st.selectbox("Model", AVAILABLE_MODELS, index=AVAILABLE_MODELS.index(DEFAULT_MODEL))
     st.text("API key loaded: ✅" if get_api_key() else "API key missing ❌")
     sb_client = _get_supabase_client()
     if sb_client:
