@@ -4,11 +4,16 @@ import re
 import math
 from datetime import datetime
 from pathlib import Path
-from typing import Tuple, Dict, Any, List
+from typing import Tuple, Dict, Any, List, Optional
 
 import streamlit as st
 from dotenv import load_dotenv
 from openai import OpenAI
+
+try:
+    import requests as _requests
+except ImportError:
+    _requests = None  # type: ignore
 
 try:
     from supabase import create_client, Client
@@ -482,6 +487,8 @@ def _history_title(entry: Dict[str, Any]) -> str:
         niche = inp.get("niche", "").strip() or "—"
         topic = inp.get("topic", "").strip() or "—"
         label = f"{module}  ·  {niche}  /  {topic}"
+    elif module == "X Researcher":
+        label = f"X Researcher  ·  @{inp.get('username', '—')}"
     else:
         tweet_text = inp.get("tweet", "").strip()
         snippet = (tweet_text[:60] + "…") if len(tweet_text) > 60 else tweet_text or "—"
@@ -516,6 +523,8 @@ def _render_history_entry(entry: Dict[str, Any], idx: int = 0) -> None:
                         st.code(s, language="text")
                 else:
                     st.code(samples, language="text")
+        elif module == "X Researcher":
+            st.markdown(f"**Username:** @{inp.get('username') or '—'}")
         else:
             st.markdown(f"**Tweet:**\n\n{inp.get('tweet') or '—'}")
             col1, col2, col3 = st.columns(3)
@@ -546,6 +555,22 @@ def _render_history_entry(entry: Dict[str, Any], idx: int = 0) -> None:
             st.markdown(f"**Tweets ({len(tweets)})**")
             for i, tw in enumerate(tweets, 1):
                 st.code(tw, language="text")
+        elif module == "X Researcher":
+            profile = result.get("profile", {})
+            ai_sum = result.get("ai_summary", {})
+            tweets_hist = result.get("tweets", [])
+            name = profile.get("name") or inp.get("username", "")
+            st.markdown(f"**Profile:** {name}")
+            followers = profile.get("followerCount", 0) or 0
+            following = profile.get("followingCount", 0) or 0
+            st.markdown(f"**Followers:** {int(followers):,}  |  **Following:** {int(following):,}")
+            if ai_sum.get("summary"):
+                st.markdown("**Summary:** " + ai_sum["summary"])
+            if tweets_hist:
+                st.markdown(f"**Recent Tweets ({len(tweets_hist)})**")
+                for t in tweets_hist:
+                    text = t.get("text") or t.get("full_text") or t.get("content") or ""
+                    st.write(f"- {text[:140]}")
         else:
             tones = result.get("tones", [])
             total = sum(len(t.get("replies", [])) for t in tones)
@@ -567,6 +592,97 @@ def _render_history_entry(entry: Dict[str, Any], idx: int = 0) -> None:
     )
 
 # =====================================
+# Module 5: X Researcher
+# =====================================
+
+_TWEETAPI_BASE = "https://api.tweetapi.com/tw-v2"
+
+
+def get_tweetapi_key() -> str:
+    try:
+        if hasattr(st, "secrets") and "TWEETAPI_KEY" in st.secrets:
+            return st.secrets["TWEETAPI_KEY"]
+    except Exception:
+        pass
+    return os.getenv("TWEETAPI_KEY", "")
+
+
+def _tweetapi_get(path: str, params: dict) -> Dict[str, Any]:
+    """Make a GET request to TweetAPI. Returns parsed JSON or raises."""
+    if _requests is None:
+        raise RuntimeError("requests library not installed. Run: pip install requests")
+    key = get_tweetapi_key()
+    if not key:
+        raise ValueError("TWEETAPI_KEY not set. Add it to your .env file.")
+    resp = _requests.get(
+        f"{_TWEETAPI_BASE}{path}",
+        params=params,
+        headers={"X-API-Key": key},
+        timeout=20,
+    )
+    if resp.status_code == 401:
+        raise ValueError("TweetAPI: Unauthorized — check your TWEETAPI_KEY.")
+    if resp.status_code == 404:
+        raise ValueError("TweetAPI: User not found.")
+    if resp.status_code == 429:
+        raise ValueError("TweetAPI: Rate limit exceeded.")
+    if not resp.ok:
+        raise ValueError(f"TweetAPI error {resp.status_code}: {resp.text[:300]}")
+    return resp.json()
+
+
+def fetch_x_profile(username: str) -> Dict[str, Any]:
+    """Fetch user profile by username."""
+    return _tweetapi_get("/user/by-username", {"username": username})
+
+
+def fetch_x_recent_tweets(user_id: str) -> Dict[str, Any]:
+    """Fetch recent tweets for a user by user ID."""
+    return _tweetapi_get("/user/tweets", {"userId": user_id})
+
+
+def build_x_researcher_prompt(username: str, profile: Dict[str, Any], tweets: List[Dict[str, Any]]) -> Tuple[str, str]:
+    tweets_text = ""
+    for i, t in enumerate(tweets, 1):
+        text = t.get("text") or t.get("full_text") or t.get("content") or str(t)
+        likes = t.get("likeCount") or t.get("favorite_count") or t.get("likes") or 0
+        retweets = t.get("retweetCount") or t.get("retweet_count") or t.get("retweets") or 0
+        replies = t.get("replyCount") or t.get("reply_count") or t.get("replies") or 0
+        tweets_text += f"\nTweet {i}: {text}\n  Likes: {likes} | Retweets: {retweets} | Replies: {replies}\n"
+
+    profile_text = json.dumps(profile, indent=2)
+
+    system = """You are an expert social media analyst specializing in X (Twitter) profiles.
+Given a user's profile data and their recent tweets, produce a concise, insightful research report.
+
+OUTPUT (STRICT JSON ONLY):
+{
+  "summary": "2-3 sentence overview of who this person is and what they're known for",
+  "content_themes": "The main topics and themes they post about",
+  "posting_style": "Their writing style, tone, and how they engage",
+  "audience_insight": "Who likely follows them and why",
+  "influence_assessment": "Assessment of their reach and influence level",
+  "notable_observations": "Any interesting patterns, strengths, or unique traits"
+}"""
+
+    user = f"""Analyze this X (Twitter) profile for @{username}:
+
+PROFILE DATA:
+{profile_text}
+
+RECENT TWEETS:
+{tweets_text}
+
+Return STRICT JSON only. No preamble, no code fences."""
+
+    return system, user
+
+
+def call_x_researcher(system: str, user: str, model: str = "gpt-5-mini") -> Dict[str, Any]:
+    return _responses_call(system, user, model)
+
+
+# =====================================
 # Streamlit App (Two Modules via Sidebar)
 # =====================================
 
@@ -577,12 +693,15 @@ with st.sidebar:
     # Use stable options so changing history count doesn't reset the radio selection
     module = st.radio(
         "Module",
-        ["Generate Tweet", "Generate Tweet V2", "Reply Generator", "History"],
+        ["Generate Tweet", "Generate Tweet V2", "Reply Generator", "X Researcher", "History"],
         index=0,
         key="module_radio",
     )
+    #model = st.selectbox("Model", ["gpt-5-mini"], index=0)
+    st.text("OpenAI key: ✅" if get_api_key() else "OpenAI key missing ❌")
+    st.text("TweetAPI key: ✅" if get_tweetapi_key() else "TweetAPI key missing ❌")
     model = st.selectbox("Model", AVAILABLE_MODELS, index=AVAILABLE_MODELS.index(DEFAULT_MODEL))
-    st.text("API key loaded: ✅" if get_api_key() else "API key missing ❌")
+    #st.text("API key loaded: ✅" if get_api_key() else "API key missing ❌")
     sb_client = _get_supabase_client()
     if sb_client:
         st.text("History: persistent ✅")
@@ -847,6 +966,169 @@ elif module == "Reply Generator":
                         file_name="replygen_result.json",
                         mime="application/json",
                     )
+
+elif module == "X Researcher":
+    st.title("🔍 X Researcher")
+    st.caption("Research any X (Twitter) profile — AI-powered summary, recent tweets, and key stats.")
+
+    if not get_tweetapi_key():
+        st.warning("Add `TWEETAPI_KEY` to your `.env` file to use this module. Get a key at tweetapi.com.")
+
+    username_input = st.text_input("X Username", placeholder="e.g., elonmusk  (without @)")
+
+    if st.button("🔍 Research Profile", type="primary"):
+        username = username_input.strip().lstrip("@")
+        if not username:
+            st.error("Please enter a username.")
+        elif not get_tweetapi_key():
+            st.error("TWEETAPI_KEY not set. Add it to your .env file.")
+        elif not get_api_key():
+            st.error("OPENAI_API_KEY not set. Add it to your .env file.")
+        else:
+            profile_data: Optional[Dict[str, Any]] = None
+            tweets_data: List[Dict[str, Any]] = []
+
+            # --- Fetch profile ---
+            with st.spinner(f"Fetching @{username} profile..."):
+                try:
+                    profile_data = fetch_x_profile(username)
+                except Exception as e:
+                    st.error(f"Profile fetch failed: {e}")
+
+            if profile_data:
+                # Response: {"data": {...user fields...}}
+                user_obj = profile_data.get("data", profile_data)
+
+                user_id = user_obj.get("id", "")
+
+                # --- Fetch recent tweets ---
+                if user_id:
+                    with st.spinner("Fetching recent tweets..."):
+                        try:
+                            tweets_resp = fetch_x_recent_tweets(str(user_id))
+                            # Response: {"data": [...tweets...]}
+                            tweets_data = tweets_resp.get("data", [])
+                            if not isinstance(tweets_data, list):
+                                tweets_data = []
+                        except Exception as e:
+                            st.warning(f"Could not fetch tweets: {e}")
+
+                # --- AI Summary ---
+                with st.spinner("Generating AI summary..."):
+                    try:
+                        sys_p, usr_p = build_x_researcher_prompt(username, user_obj, tweets_data)
+                        ai_result = call_x_researcher(sys_p, usr_p, model=model)
+                    except Exception as e:
+                        st.error(f"AI summary failed: {e}")
+                        ai_result = {}
+
+                # ========================
+                # Display Results
+                # ========================
+
+                # Header row
+                col_pic, col_info = st.columns([1, 3])
+                with col_pic:
+                    pic = user_obj.get("avatar", "")
+                    if pic:
+                        st.image(pic, width=120)
+                with col_info:
+                    display_name = user_obj.get("name", username)
+                    handle = user_obj.get("username", username)
+                    st.subheader(f"{display_name}  (@{handle})")
+                    bio = user_obj.get("bio", "")
+                    if bio:
+                        st.write(bio)
+                    location = user_obj.get("location") or ""
+                    joined = str(user_obj.get("createdAt", ""))[:10]
+                    meta_parts = []
+                    if location:
+                        meta_parts.append(f"📍 {location}")
+                    if joined:
+                        meta_parts.append(f"📅 Joined {joined}")
+                    if user_obj.get("isBlueVerified") or user_obj.get("verified"):
+                        meta_parts.append("✔ Verified")
+                    website = user_obj.get("website", "")
+                    if website:
+                        meta_parts.append(f"🔗 {website}")
+                    if meta_parts:
+                        st.caption("  •  ".join(meta_parts))
+
+                st.divider()
+
+                # Stats row
+                followers = user_obj.get("followerCount", 0) or 0
+                following = user_obj.get("followingCount", 0) or 0
+                tweets_count = user_obj.get("tweetCount", 0) or 0
+
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Followers", f"{int(followers):,}")
+                c2.metric("Following", f"{int(following):,}")
+                c3.metric("Tweets", f"{int(tweets_count):,}")
+
+                st.divider()
+
+                # AI Summary
+                if ai_result and "error" not in ai_result:
+                    st.subheader("AI Profile Summary")
+                    col_a, col_b = st.columns(2)
+                    with col_a:
+                        if ai_result.get("summary"):
+                            st.markdown("**Overview**")
+                            st.write(ai_result["summary"])
+                        if ai_result.get("content_themes"):
+                            st.markdown("**Content Themes**")
+                            st.write(ai_result["content_themes"])
+                        if ai_result.get("posting_style"):
+                            st.markdown("**Posting Style**")
+                            st.write(ai_result["posting_style"])
+                    with col_b:
+                        if ai_result.get("audience_insight"):
+                            st.markdown("**Audience Insight**")
+                            st.write(ai_result["audience_insight"])
+                        if ai_result.get("influence_assessment"):
+                            st.markdown("**Influence Assessment**")
+                            st.write(ai_result["influence_assessment"])
+                        if ai_result.get("notable_observations"):
+                            st.markdown("**Notable Observations**")
+                            st.write(ai_result["notable_observations"])
+                    st.divider()
+
+                # Tweets
+                if tweets_data:
+                    st.subheader(f"Tweets ({len(tweets_data)})")
+                    for i, t in enumerate(tweets_data, 1):
+                        text = t.get("text") or t.get("full_text") or t.get("content") or str(t)
+                        likes = t.get("likeCount") or 0
+                        retweets = t.get("retweetCount") or 0
+                        replies_c = t.get("replyCount") or 0
+                        views = t.get("viewCount") or 0
+                        created = str(t.get("createdAt") or "")[:10]
+                        with st.container(border=True):
+                            st.write(text)
+                            stats = f"❤️ {int(likes):,}  🔁 {int(retweets):,}  💬 {int(replies_c):,}"
+                            if views:
+                                stats += f"  👁 {int(views):,}"
+                            if created:
+                                stats += f"  •  {created}"
+                            st.caption(stats)
+                else:
+                    st.info("No tweets fetched.")
+
+                # Save to history
+                _save_to_history("X Researcher", {"username": username}, {
+                    "profile": user_obj,
+                    "tweets": tweets_data,
+                    "ai_summary": ai_result,
+                })
+
+                # Download raw data
+                st.download_button(
+                    "Download Profile Data (JSON)",
+                    data=json.dumps({"profile": user_obj, "tweets": tweets_data, "ai_summary": ai_result}, ensure_ascii=False, indent=2),
+                    file_name=f"x_profile_{username}.json",
+                    mime="application/json",
+                )
 
 else:  # History
     history: List[Dict[str, Any]] = _load_history()
