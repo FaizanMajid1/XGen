@@ -697,11 +697,9 @@ with st.sidebar:
         index=0,
         key="module_radio",
     )
-    #model = st.selectbox("Model", ["gpt-5-mini"], index=0)
+    model = st.selectbox("Model", AVAILABLE_MODELS, index=AVAILABLE_MODELS.index(DEFAULT_MODEL))
     st.text("OpenAI key: ✅" if get_api_key() else "OpenAI key missing ❌")
     st.text("TweetAPI key: ✅" if get_tweetapi_key() else "TweetAPI key missing ❌")
-    model = st.selectbox("Model", AVAILABLE_MODELS, index=AVAILABLE_MODELS.index(DEFAULT_MODEL))
-    #st.text("API key loaded: ✅" if get_api_key() else "API key missing ❌")
     sb_client = _get_supabase_client()
     if sb_client:
         st.text("History: persistent ✅")
